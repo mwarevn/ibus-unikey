@@ -40,30 +40,30 @@ It use Unikey-engine for progress key event.
     > You must have the "Language Support" application installed.
     
     - Open the Language Support application.
-    - In the list of available languages, locate Vietnamese.
+    - In the list of available languages, locate `Vietnamese`.
     - If Vietnamese is not installed, select it and click Install.
     - Change your keyboard input method system to IBus. (The exact steps for this may vary depending on your operating system)
    
     #### Step 2: Configure IBus for Vietnamese
     
     - Open a terminal window.
-    - Run the command ibus-setup.
+    - Run the command `ibus-setup`.
     - Navigate to the Input Method tab.
-    - If Vietnamese - Unikey is not listed, click Add and select it.
+    - If `Vietnamese - Unikey` is not listed, click Add and select it.
     - Close the ibus-setup window.
-    - In the same terminal window, run the command ibus restart.
+    - In the same terminal window, run the command `ibus restart`.
    
     #### Step 3: Select IBus in System Settings
     
-    - Run im-config in the terminal.
-    - When prompted for "user configuration", select ibus.
+    - Run `im-config` in the terminal.
+    - When prompted for `user configuration`, select `ibus`.
 
    #### Step 4: Finalize Setup
     
     - Restart your computer.
     - Open your system Settings.
     - Navigate to the input method settings. (This location may vary depending on your operating system)
-    - Change the input method to Vietnamese.
+    - Change the input method to `Vietnamese`.
 
     > You should now be able to type in Vietnamese!
     

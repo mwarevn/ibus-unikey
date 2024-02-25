@@ -15,7 +15,7 @@ It use Unikey-engine for progress key event.
 
 # Install From SourceIn (Guide)
 
-#### Ubuntu
+### Ubuntu
 
 1. Install required packages:
 
@@ -69,7 +69,7 @@ It use Unikey-engine for progress key event.
     
 
 
-#### FreeBSD
+### FreeBSD
 
 This instruction is for FreeBSD 12-RELEASE.
 

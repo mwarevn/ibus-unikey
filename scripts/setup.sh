@@ -3,8 +3,11 @@
 # Ubuntu/Debian (tested 22.04/24.04/26.04). Idempotent, có thể chạy lại nhiều lần.
 # Usage:
 #   ./scripts/setup.sh                 # build + install + setup (hỏi sudo khi cần)
-#   ./scripts/setup.sh --build-only    # chỉ build
+#   ./scripts/setup.sh --build-only    # chỉ build + install
 #   ./scripts/setup.sh --setup-only    # chỉ setup ibus/gsettings (không build)
+#   ./scripts/setup.sh --deb           # build + đóng gói .deb (build/ibus-unikey_*.deb)
+#   ./scripts/setup.sh --deb-only      # chỉ đóng gói .deb (cần build/ đã tồn tại)
+#   ./scripts/setup.sh --deb --install-deb  # build .deb rồi cài luôn bằng apt
 #   ./scripts/setup.sh --uninstall     # gỡ preload khỏi ibus
 #   ./scripts/setup.sh -y              # không hỏi y/n
 set -euo pipefail
@@ -19,10 +22,16 @@ GSCHEMA_ID="org.freedesktop.ibus.engine.unikey"
 DO_BUILD=1
 DO_SETUP=1
 DO_UNINSTALL=0
+DO_DEB=0
+DO_DEB_ONLY=0
+INSTALL_DEB=0
 ASSUME_YES=0
 for a in "$@"; do case "$a" in
   --build-only) DO_SETUP=0 ;;
   --setup-only) DO_BUILD=0 ;;
+  --deb)        DO_DEB=1 ;;
+  --deb-only)   DO_DEB_ONLY=1; DO_BUILD=0; DO_SETUP=0 ;;
+  --install-deb) INSTALL_DEB=1 ;;
   --uninstall)  DO_UNINSTALL=1; DO_BUILD=0 ;;
   -y|--yes)     ASSUME_YES=1 ;;
   -h|--help)    sed -n '2,12p' "$0"; exit 0 ;;
@@ -120,6 +129,54 @@ do_build(){
   if [[ -f /usr/share/ibus/component/unikey.xml ]] || [[ -f /usr/local/share/ibus/component/unikey.xml ]]; then
     ok "Component unikey.xml đã cài."
   fi
+}
+
+do_deb(){
+  info "Đóng gói .deb ..."
+  ensure_deps
+  if [[ -d "$BUILD_DIR" ]] && ! touch "$BUILD_DIR/.writable" 2>/dev/null; then
+    warn "Thư mục $BUILD_DIR không ghi được (do root). Đang fix quyền..."
+    run_sudo chown -R "$USER":"$USER" "$BUILD_DIR" 2>/dev/null || {
+      warn "Không chown được, xóa và tạo lại $BUILD_DIR"
+      run_sudo rm -rf "$BUILD_DIR"
+      mkdir -p "$BUILD_DIR"
+    }
+  else
+    mkdir -p "$BUILD_DIR"
+    rm -f "$BUILD_DIR/.writable" 2>/dev/null || true
+  fi
+  # cần configure nếu chưa có hoặc thiếu CPackConfig
+  if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]] || [[ ! -f "$BUILD_DIR/CPackConfig.cmake" ]]; then
+    cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -B "$BUILD_DIR" "$REPO_DIR"
+  fi
+  cmake --build "$BUILD_DIR" -j"$(nproc)"
+  if ! cpack --config "$BUILD_DIR/CPackConfig.cmake" -G DEB -B "$BUILD_DIR" 2>&1 | tee /tmp/ibus-unikey-cpack.log; then
+    die "cpack thất bại — xem /tmp/ibus-unikey-cpack.log"
+  fi
+  local deb
+  deb="$(ls -t "$BUILD_DIR"/ibus-unikey_*.deb 2>/dev/null | head -1)"
+  if [[ -n "$deb" && -f "$deb" ]]; then
+    ok "Đã tạo $deb ($(du -h "$deb" | cut -f1))"
+    dpkg-deb --info "$deb" 2>/dev/null | sed 's/^/  /'
+  else
+    warn "Không tìm thấy .deb trong $BUILD_DIR"
+  fi
+}
+
+install_deb(){
+  local deb
+  deb="$(ls -t "$BUILD_DIR"/ibus-unikey_*.deb 2>/dev/null | head -1)"
+  [[ -n "$deb" && -f "$deb" ]] || die "Không có .deb để cài — chạy --deb trước."
+  info "Cài $deb ..."
+  need_sudo
+  run_sudo apt-get install -y "./$deb" 2>/dev/null || run_sudo apt install -y "./$deb" || run_sudo dpkg -i "$deb"
+  for d in /usr/share/glib-2.0/schemas /usr/local/share/glib-2.0/schemas; do
+    [[ -d "$d" ]] && run_sudo glib-compile-schemas "$d" 2>/dev/null || true
+  done
+  ok "Đã cài .deb."
 }
 
 ibus_running(){
@@ -316,7 +373,15 @@ main(){
   echo "ibus-unikey setup — $(detect_os) — $REPO_DIR"
   echo ""
   if [[ $DO_UNINSTALL -eq 1 ]]; then do_uninstall; exit 0; fi
+  # --deb-only: chỉ đóng gói (cần build/ đã có)
+  if [[ $DO_DEB_ONLY -eq 1 ]]; then
+    do_deb
+    if [[ $INSTALL_DEB -eq 1 ]]; then install_deb; do_setup; fi
+    exit 0
+  fi
   if [[ $DO_BUILD -eq 1 ]]; then do_build; fi
+  if [[ $DO_DEB -eq 1 ]]; then do_deb; fi
+  if [[ $INSTALL_DEB -eq 1 ]]; then install_deb; fi
   if [[ $DO_SETUP -eq 1 ]]; then do_setup; fi
 }
 

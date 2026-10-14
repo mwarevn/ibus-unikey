@@ -18,9 +18,12 @@ Script tự: cài deps, build, `cmake --install`, `glib-compile-schemas`, thêm 
 Tùy chọn:
 
 ```bash
-./scripts/setup.sh --build-only -y   # chỉ build + install, không đụng config
-./scripts/setup.sh --setup-only -y   # chỉ setup ibus/gsettings/env
-./scripts/setup.sh --uninstall       # gỡ (giữ deps)
+./scripts/setup.sh --build-only -y           # chỉ build + install, không đụng config
+./scripts/setup.sh --setup-only -y           # chỉ setup ibus/gsettings/env
+./scripts/setup.sh --deb -y                  # build + install + đóng gói .deb
+./scripts/setup.sh --deb-only -y             # chỉ đóng gói .deb từ build/ có sẵn
+./scripts/setup.sh --deb --install-deb -y    # build .deb rồi cài luôn bằng apt
+./scripts/setup.sh --uninstall               # gỡ (giữ deps)
 ```
 
 ### Cài thủ công
@@ -42,7 +45,14 @@ Sau đó logout/login, chọn **Unikey** trong tray/input source.
 
 ### Cài từ file .deb (build sẵn)
 
-Build trên máy (tạo `build/ibus-unikey_0.7.0_amd64.deb`):
+Qua script (khuyên dùng nếu muốn file .deb để phát cho máy khác):
+
+```bash
+./scripts/setup.sh --deb-only -y                    # chỉ đóng gói (cần build/ có sẵn)
+./scripts/setup.sh --deb --install-deb -y           # build + đóng gói + cài bằng apt
+```
+
+Build thủ công (tạo `build/ibus-unikey_0.7.0_amd64.deb`):
 
 ```bash
 cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -B build

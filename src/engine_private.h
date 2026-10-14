@@ -24,6 +24,15 @@ struct _IBusUnikeyEngine
     gboolean last_key_with_shift;
 
     std::string* preeditstr;
+
+    // new: vietMode EN<->VI toggle (true=VI, false=EN passthrough)
+    gboolean vietMode;
+    gboolean showUnderline;
+    gchar*   toggleHotkey; // "shift-shift" | "shift-space" | "ctrl-space" | "all"
+
+    // debounce for Shift+Shift
+    guint32  lastShiftTimeMs;
+    gboolean pendingShiftToggle; // true if last key was Shift release alone
 };
 
 struct _IBusUnikeyEngineClass
@@ -68,5 +77,9 @@ static void ibus_unikey_engine_erase_chars(IBusEngine *engine, int num_chars);
 
 static int latinToUtf(unsigned char* dst, unsigned char* src, int inSize, int* pOutSize);
 
-#endif
+// viet toggle helpers
+static void ibus_unikey_toggle_viet_mode(IBusUnikeyEngine* self);
+static void ibus_unikey_update_viet_mode_ui(IBusUnikeyEngine* self);
+static gboolean ibus_unikey_is_toggle_hotkey(IBusUnikeyEngine* self, guint keyval, guint modifiers, gboolean isShiftShiftAlone);
 
+#endif

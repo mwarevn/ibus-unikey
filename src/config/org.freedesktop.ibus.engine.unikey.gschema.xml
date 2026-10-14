@@ -59,5 +59,26 @@
       <summary>Standalone W as ư (Telex only)</summary>
       <description></description>
     </key>
+    <key name="show-preedit-underline" type="b">
+      <default>false</default>
+      <summary>Underline preedit text</summary>
+      <description>When false, preedit has no underline — cleaner on Chrome/VSCode/Electron. When true, single underline.</description>
+    </key>
+    <key name="viet-mode" type="b">
+      <default>true</default>
+      <summary>Vietnamese mode (VI) vs English passthrough (EN)</summary>
+      <description>True = Vietnamese input active. False = pass-through English without filtering. Toggled by hotkey or panel.</description>
+    </key>
+    <key name="toggle-hotkey" type="s">
+      <choices>
+        <choice value='shift-shift'/>
+        <choice value='shift-space'/>
+        <choice value='ctrl-space'/>
+        <choice value='all'/>
+      </choices>
+      <default>'all'</default>
+      <summary>Hotkey to toggle EN/VI</summary>
+      <description>shift-shift = double Shift, shift-space = Shift+Space, ctrl-space = Ctrl+Space, all = any of them</description>
+    </key>
   </schema>
 </schemalist>

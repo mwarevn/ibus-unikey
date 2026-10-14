@@ -19,6 +19,9 @@
 #define CONFIG_FREEMARKING       "free-marking"
 #define CONFIG_MACROENABLED      "macro-enabled"
 #define CONFIG_STANDALONEW       "standalone-w-as-uw"
+#define CONFIG_SHOW_UNDERLINE    "show-preedit-underline"
+#define CONFIG_VIETMODE          "viet-mode"
+#define CONFIG_TOGGLE_HOTKEY     "toggle-hotkey"
 
 const std::map<const std::string, std::pair<UkInputMethod, const gchar*>> input_method_map {
     { "telex",   { UkTelex,        "Extend Telex" } },

@@ -18,6 +18,9 @@
 
 #define CONVERT_BUF_SIZE 1024
 
+// Shift+Shift double tap window (ms)
+#define SHIFT_TOGGLE_MS 400
+
 static unsigned char WordBreakSyms[] =
 {
     ',', ';', ':', '.', '\"', '\'', '!', '?', ' ',
@@ -28,7 +31,8 @@ static unsigned char WordBreakSyms[] =
 
 static IBusEngineClass* parent_class = NULL;
 
-static IBusUnikeyEngine* unikey; // current (focus) unikey engine
+// focused engine for config callback (may be NULL on startup)
+static IBusUnikeyEngine* g_focused = NULL;
 
 GType ibus_unikey_engine_get_type(void)
 {
@@ -90,16 +94,29 @@ static void ibus_unikey_engine_class_init(IBusUnikeyEngineClass* klass)
     engine_class->property_activate = ibus_unikey_engine_property_activate;
 }
 
-static void ibus_unikey_engine_init(IBusUnikeyEngine* unikey)
+static void ibus_unikey_engine_init(IBusUnikeyEngine* self)
 {
-    ibus_unikey_engine_load_config(unikey);
+    // defaults before config loads
+    self->preeditstr = new std::string();
+    self->last_key_with_shift = FALSE;
+    self->vietMode = TRUE;
+    self->showUnderline = FALSE;
+    self->toggleHotkey = g_strdup("all");
+    self->lastShiftTimeMs = 0;
+    self->pendingShiftToggle = FALSE;
 
-    UnikeySetInputMethod(unikey->im);
-    UnikeySetOutputCharset(unikey->oc);
-    UnikeySetOptions(&unikey->ukopt);
+    ibus_unikey_engine_load_config(self);
 
-    unikey->preeditstr = new std::string();
-    ibus_unikey_engine_create_property_list(unikey);
+    UnikeySetInputMethod(self->im);
+    UnikeySetOutputCharset(self->oc);
+    UnikeySetOptions(&self->ukopt);
+    // apply vietMode globally (ukengine checks this for filtering)
+    // we keep a single global vietKey flag in ukengine shared mem
+    extern UkSharedMem* pShMem;
+    if (pShMem) pShMem->vietKey = self->vietMode ? 1 : 0;
+
+    ibus_unikey_engine_create_property_list(self);
+    ibus_unikey_update_viet_mode_ui(self);
 }
 
 static IBusProperty* find_prop_from_list(IBusPropList* list, const char* key)
@@ -115,76 +132,85 @@ static IBusProperty* find_prop_from_list(IBusPropList* list, const char* key)
     return NULL;
 }
 
-static void ibus_unikey_engine_update_property_list(IBusUnikeyEngine* unikey)
+static void ibus_unikey_engine_update_property_list(IBusUnikeyEngine* self)
 {
     bool b;
     IBusProperty* prop;
 
-    b = unikey->ukopt.spellCheckEnabled;
-    prop = find_prop_from_list(unikey->prop_list, CONFIG_SPELLCHECK);
+    b = self->ukopt.spellCheckEnabled;
+    prop = find_prop_from_list(self->prop_list, CONFIG_SPELLCHECK);
     if (prop != NULL)
-    {
-        ibus_property_set_state(prop,
-                (b == 1) ? PROP_STATE_CHECKED:PROP_STATE_UNCHECKED);
-    }
+        ibus_property_set_state(prop, (b == 1) ? PROP_STATE_CHECKED:PROP_STATE_UNCHECKED);
 
-    b = unikey->ukopt.autoNonVnRestore;
-    prop = find_prop_from_list(unikey->prop_list, CONFIG_AUTORESTORENONVN);
+    b = self->ukopt.autoNonVnRestore;
+    prop = find_prop_from_list(self->prop_list, CONFIG_AUTORESTORENONVN);
     if (prop != NULL)
-    {
-        ibus_property_set_state(prop,
-                (b == 1) ? PROP_STATE_CHECKED:PROP_STATE_UNCHECKED);
-    }
+        ibus_property_set_state(prop, (b == 1) ? PROP_STATE_CHECKED:PROP_STATE_UNCHECKED);
 
-    b = unikey->ukopt.macroEnabled;
-    prop = find_prop_from_list(unikey->prop_list, CONFIG_MACROENABLED);
+    b = self->ukopt.macroEnabled;
+    prop = find_prop_from_list(self->prop_list, CONFIG_MACROENABLED);
     if (prop != NULL)
-    {
-        ibus_property_set_state(prop,
-                (b == 1) ? PROP_STATE_CHECKED:PROP_STATE_UNCHECKED);
+        ibus_property_set_state(prop, (b == 1) ? PROP_STATE_CHECKED:PROP_STATE_UNCHECKED);
+
+    ibus_unikey_update_viet_mode_ui(self);
+    if (g_focused == self) {
+        ibus_engine_update_property(IBUS_ENGINE(self), find_prop_from_list(self->prop_list, "viet-mode"));
     }
 }
 
-static void ibus_unikey_engine_load_config(IBusUnikeyEngine* unikey)
+static void ibus_unikey_engine_load_config(IBusUnikeyEngine* self)
 {
-    gchar* str;
-    gboolean b;
+    gchar* str = NULL;
+    gboolean b = FALSE;
 
     auto im = input_method_map.at("telex").first;
-    if (ibus_unikey_config_get_string(CONFIG_INPUTMETHOD, &str))
+    if (ibus_unikey_config_get_string(CONFIG_INPUTMETHOD, &str) && str)
     {
-        auto p = input_method_map.at(std::string(str));
-        im = p.first;
-        g_free(str);
+        auto it = input_method_map.find(std::string(str));
+        if (it != input_method_map.end()) im = it->second.first;
+        g_free(str); str = NULL;
     }
-    unikey->im = im;
+    self->im = im;
 
     auto oc = output_charset_map.at("unicode").first;
-    if (ibus_unikey_config_get_string(CONFIG_OUTPUTCHARSET, &str))
+    if (ibus_unikey_config_get_string(CONFIG_OUTPUTCHARSET, &str) && str)
     {
-        auto p = output_charset_map.at(std::string(str));
-        oc = p.first;
-        g_free(str);
+        auto it = output_charset_map.find(std::string(str));
+        if (it != output_charset_map.end()) oc = it->second.first;
+        g_free(str); str = NULL;
     }
-    unikey->oc = oc;
+    self->oc = oc;
 
     if (ibus_unikey_config_get_boolean(CONFIG_FREEMARKING, &b))
-        unikey->ukopt.freeMarking = b;
+        self->ukopt.freeMarking = b;
 
     if (ibus_unikey_config_get_boolean(CONFIG_MODERNSTYLE, &b))
-        unikey->ukopt.modernStyle = b;
+        self->ukopt.modernStyle = b;
 
     if (ibus_unikey_config_get_boolean(CONFIG_MACROENABLED, &b))
-        unikey->ukopt.macroEnabled = b;
+        self->ukopt.macroEnabled = b;
 
     if (ibus_unikey_config_get_boolean(CONFIG_SPELLCHECK, &b))
-        unikey->ukopt.spellCheckEnabled = b;
+        self->ukopt.spellCheckEnabled = b;
 
     if (ibus_unikey_config_get_boolean(CONFIG_AUTORESTORENONVN, &b))
-        unikey->ukopt.autoNonVnRestore = b;
+        self->ukopt.autoNonVnRestore = b;
 
     if (ibus_unikey_config_get_boolean(CONFIG_STANDALONEW, &b))
-        unikey->process_w_at_begin = b;
+        self->process_w_at_begin = b;
+
+    // new keys — keep previous value if not present
+    if (ibus_unikey_config_get_boolean(CONFIG_SHOW_UNDERLINE, &b))
+        self->showUnderline = b;
+    if (ibus_unikey_config_get_boolean(CONFIG_VIETMODE, &b)) {
+        self->vietMode = b;
+        extern UkSharedMem* pShMem;
+        if (pShMem) pShMem->vietKey = b ? 1 : 0;
+    }
+    if (ibus_unikey_config_get_string(CONFIG_TOGGLE_HOTKEY, &str) && str) {
+        g_free(self->toggleHotkey);
+        self->toggleHotkey = str; // take ownership
+    }
 
     // load macro
     gchar* fn = get_macro_file();
@@ -196,63 +222,80 @@ static GObject* ibus_unikey_engine_constructor(GType type,
                                                guint n_construct_params,
                                                GObjectConstructParam* construct_params)
 {
-    IBusUnikeyEngine* unikey;
-
-    unikey = (IBusUnikeyEngine*)
+    IBusUnikeyEngine* self;
+    self = (IBusUnikeyEngine*)
         G_OBJECT_CLASS(parent_class)->constructor(type,
                                                   n_construct_params,
                                                   construct_params);
-
-    return (GObject*)unikey;
+    return (GObject*)self;
 }
 
-static void ibus_unikey_engine_destroy(IBusUnikeyEngine* unikey)
+static void ibus_unikey_engine_destroy(IBusUnikeyEngine* self)
 {
-    delete unikey->preeditstr;
-    g_object_unref(unikey->prop_list);
-
-    IBUS_OBJECT_CLASS(parent_class)->destroy((IBusObject*)unikey);
+    if (self->preeditstr) { delete self->preeditstr; self->preeditstr = nullptr; }
+    if (self->prop_list)  { g_object_unref(self->prop_list); self->prop_list = nullptr; }
+    if (self->toggleHotkey) { g_free(self->toggleHotkey); self->toggleHotkey = nullptr; }
+    if (g_focused == self) g_focused = NULL;
+    IBUS_OBJECT_CLASS(parent_class)->destroy((IBusObject*)self);
 }
 
 static void ibus_unikey_buffer_reset(IBusEngine* engine)
 {
-    unikey = (IBusUnikeyEngine*)engine;
-
+    auto* self = (IBusUnikeyEngine*)engine;
     ibus_engine_hide_preedit_text(engine);
-    unikey->preeditstr->clear();
+    if (self->preeditstr) self->preeditstr->clear();
     UnikeyResetBuf();
 }
 
 static void ibus_unikey_buffer_commit(IBusEngine* engine)
 {
-    unikey = (IBusUnikeyEngine*)engine;
-
-    if (unikey->preeditstr->length() > 0)
+    auto* self = (IBusUnikeyEngine*)engine;
+    if (self->preeditstr && self->preeditstr->length() > 0)
     {
-        IBusText *text;
-        text = ibus_text_new_from_static_string(unikey->preeditstr->c_str());
+        IBusText *text = ibus_text_new_from_string(self->preeditstr->c_str());
         ibus_engine_commit_text(engine, text);
     }
-
     ibus_unikey_buffer_reset(engine);
 }
 
 static void ibus_unikey_engine_focus_in(IBusEngine* engine)
 {
-    unikey = (IBusUnikeyEngine*)engine;
-    ibus_engine_register_properties(engine, unikey->prop_list);
+    auto* self = (IBusUnikeyEngine*)engine;
+    g_focused = self;
+    // sync ukengine vietKey with this engine's mode
+    extern UkSharedMem* pShMem;
+    if (pShMem) pShMem->vietKey = self->vietMode ? 1 : 0;
+
+    ibus_engine_register_properties(engine, self->prop_list);
+    // update toggle label immediately
+    ibus_unikey_update_viet_mode_ui(self);
 
     parent_class->focus_in(engine);
 }
 
 static void ibus_unikey_engine_focus_out(IBusEngine* engine)
 {
+    // commit pending preedit instead of discarding — avoid losing text on alt-tab
+    auto* self = (IBusUnikeyEngine*)engine;
+    if (self->preeditstr && !self->preeditstr->empty()) {
+        IBusText *text = ibus_text_new_from_string(self->preeditstr->c_str());
+        ibus_engine_commit_text(engine, text);
+    }
     ibus_unikey_buffer_reset(engine);
+    if (g_focused == self) {
+        // keep g_focused for config callback that may fire during focus change
+    }
     parent_class->focus_out(engine);
 }
 
 static void ibus_unikey_engine_reset(IBusEngine* engine)
 {
+    // reset requested by client (e.g. cursor moved) — commit first
+    auto* self = (IBusUnikeyEngine*)engine;
+    if (self->preeditstr && !self->preeditstr->empty()) {
+        IBusText *text = ibus_text_new_from_string(self->preeditstr->c_str());
+        ibus_engine_commit_text(engine, text);
+    }
     ibus_unikey_buffer_reset(engine);
     parent_class->reset(engine);
 }
@@ -269,59 +312,143 @@ static void ibus_unikey_engine_disable(IBusEngine* engine)
 
 static void ibus_unikey_config_value_changed(gchar* name, gpointer user_data)
 {
-    ibus_unikey_engine_load_config(unikey);
+    (void)user_data;
+    if (!g_focused) return; // no focused engine yet (startup)
 
-    UnikeySetInputMethod(unikey->im);
-    UnikeySetOutputCharset(unikey->oc);
-    UnikeySetOptions(&unikey->ukopt);
+    // reload config for focused engine only; other engines will reload on next focus_in
+    ibus_unikey_engine_load_config(g_focused);
 
-    ibus_unikey_engine_update_property_list(unikey);
+    UnikeySetInputMethod(g_focused->im);
+    UnikeySetOutputCharset(g_focused->oc);
+    UnikeySetOptions(&g_focused->ukopt);
+    extern UkSharedMem* pShMem;
+    if (pShMem) pShMem->vietKey = g_focused->vietMode ? 1 : 0;
+
+    ibus_unikey_engine_update_property_list(g_focused);
+    // push property updates to panel
+    ibus_engine_update_property(IBUS_ENGINE(g_focused),
+        find_prop_from_list(g_focused->prop_list, CONFIG_SPELLCHECK));
+    ibus_engine_update_property(IBUS_ENGINE(g_focused),
+        find_prop_from_list(g_focused->prop_list, CONFIG_AUTORESTORENONVN));
+    ibus_engine_update_property(IBUS_ENGINE(g_focused),
+        find_prop_from_list(g_focused->prop_list, CONFIG_MACROENABLED));
+    ibus_engine_update_property(IBUS_ENGINE(g_focused),
+        find_prop_from_list(g_focused->prop_list, "viet-mode"));
+}
+
+// ------------ vietMode toggle helpers ------------
+
+static void ibus_unikey_update_viet_mode_ui(IBusUnikeyEngine* self)
+{
+    IBusProperty* prop = find_prop_from_list(self->prop_list, "viet-mode");
+    if (!prop) return;
+    IBusText* label = ibus_text_new_from_string(self->vietMode ? "VI" : "EN");
+    ibus_property_set_label(prop, label);
+    // also use symbol as icon hint if needed
+    ibus_property_set_symbol(prop, label);
+    ibus_property_set_state(prop, self->vietMode ? PROP_STATE_CHECKED : PROP_STATE_UNCHECKED);
+    // keep prop tooltip
+    const char* tip = self->vietMode ? _("Vietnamese — hotkey to switch to EN") : _("English — hotkey to switch to VI");
+    IBusText* tooltip = ibus_text_new_from_string(tip);
+    ibus_property_set_tooltip(prop, tooltip);
+}
+
+static void ibus_unikey_toggle_viet_mode(IBusUnikeyEngine* self)
+{
+    // commit pending composition before switching — avoids half-word corruption
+    ibus_unikey_buffer_commit(IBUS_ENGINE(self));
+    self->vietMode = !self->vietMode;
+    extern UkSharedMem* pShMem;
+    if (pShMem) pShMem->vietKey = self->vietMode ? 1 : 0;
+    UnikeyResetBuf();
+    ibus_unikey_config_set_boolean(CONFIG_VIETMODE, self->vietMode);
+    ibus_unikey_update_viet_mode_ui(self);
+    ibus_engine_update_property(IBUS_ENGINE(self), find_prop_from_list(self->prop_list, "viet-mode"));
+}
+
+static gboolean viet_hotkey_allows(IBusUnikeyEngine* self, const char* want)
+{
+    if (!self->toggleHotkey) return true;
+    if (strcmp(self->toggleHotkey, "all")==0) return true;
+    return strcmp(self->toggleHotkey, want)==0;
+}
+
+static gboolean ibus_unikey_is_toggle_hotkey(IBusUnikeyEngine* self, guint keyval, guint modifiers, gboolean isShiftShiftAlone)
+{
+    // Ctrl+Space
+    if (keyval == IBUS_space && (modifiers & IBUS_CONTROL_MASK)) {
+        if (viet_hotkey_allows(self, "ctrl-space")) return TRUE;
+    }
+    // Shift+Space (with shift)
+    if (keyval == IBUS_space && (modifiers & IBUS_SHIFT_MASK)) {
+        if (viet_hotkey_allows(self, "shift-space")) return TRUE;
+    }
+    // bare Shift press (Shift_L / Shift_R alone) — handled via isShiftShiftAlone
+    if (isShiftShiftAlone) {
+        if (viet_hotkey_allows(self, "shift-shift")) return TRUE;
+    }
+    return FALSE;
 }
 
 static void ibus_unikey_engine_property_activate(IBusEngine* engine,
                                                  const gchar* prop_name,
                                                  guint prop_state)
 {
-    unikey = (IBusUnikeyEngine*)engine;
+    auto* self = (IBusUnikeyEngine*)engine;
 
     if (strcmp(prop_name, "more-settings") == 0)
     {
-        int ret = 0;
-
-        ret = system(LIBEXECDIR "/ibus-setup-unikey &");
+        int ret = system(LIBEXECDIR "/ibus-setup-unikey &");
         if (ret == -1)
-        {
-	    g_print("Failed to open ibus-setup-unikey");
-        }
+            g_print("Failed to open ibus-setup-unikey");
         return;
     }
-
+    if (strcmp(prop_name, "viet-mode") == 0)
+    {
+        (void)prop_state;
+        ibus_unikey_toggle_viet_mode(self);
+        return;
+    }
     if (strcmp(prop_name, CONFIG_SPELLCHECK) == 0)
     {
-        unikey->ukopt.spellCheckEnabled = prop_state > 0;
+        self->ukopt.spellCheckEnabled = prop_state > 0;
         ibus_unikey_config_set_boolean(prop_name, prop_state > 0);
     }
     else if (strcmp(prop_name, CONFIG_AUTORESTORENONVN) == 0)
     {
-        unikey->ukopt.autoNonVnRestore = prop_state > 0;
+        self->ukopt.autoNonVnRestore = prop_state > 0;
         ibus_unikey_config_set_boolean(prop_name, prop_state > 0);
     }
     else if (strcmp(prop_name, CONFIG_MACROENABLED) == 0)
     {
-        unikey->ukopt.macroEnabled = prop_state > 0;
+        self->ukopt.macroEnabled = prop_state > 0;
         ibus_unikey_config_set_boolean(prop_name, prop_state > 0);
     }
 }
 
-static void ibus_unikey_engine_create_property_list(IBusUnikeyEngine* unikey)
+static void ibus_unikey_engine_create_property_list(IBusUnikeyEngine* self)
 {
     IBusProperty* prop;
     IBusText* label;
 
-    if (unikey->prop_list != NULL)
+    if (self->prop_list != NULL)
         return;
-    unikey->prop_list = ibus_prop_list_new();
-    g_object_ref_sink(unikey->prop_list);
+    self->prop_list = ibus_prop_list_new();
+    g_object_ref_sink(self->prop_list);
+
+    // viet-mode toggle (EN/VI) — first item, most visible
+    label = ibus_text_new_from_string(self->vietMode ? "VI" : "EN");
+    IBusText* tooltip_v = ibus_text_new_from_string(_("Click to toggle EN/VI"));
+    prop = ibus_property_new("viet-mode",
+                             PROP_TYPE_TOGGLE,
+                             label,
+                             "",
+                             tooltip_v,
+                             TRUE,
+                             TRUE,
+                             self->vietMode ? PROP_STATE_CHECKED : PROP_STATE_UNCHECKED,
+                             NULL);
+    ibus_prop_list_append(self->prop_list, prop);
 
     // spellcheck property
     label = ibus_text_new_from_static_string(_("Enable spell check"));
@@ -332,11 +459,10 @@ static void ibus_unikey_engine_create_property_list(IBusUnikeyEngine* unikey)
                              NULL,
                              TRUE,
                              TRUE,
-                             (unikey->ukopt.spellCheckEnabled==1)?
+                             (self->ukopt.spellCheckEnabled==1)?
                              PROP_STATE_CHECKED:PROP_STATE_UNCHECKED,
                              NULL);
-    if (ibus_prop_list_update_property(unikey->prop_list, prop) == false)
-        ibus_prop_list_append(unikey->prop_list, prop);
+    ibus_prop_list_append(self->prop_list, prop);
 
     // auto restore property
     label = ibus_text_new_from_static_string(_("Auto restore non Vietnamese word"));
@@ -347,11 +473,10 @@ static void ibus_unikey_engine_create_property_list(IBusUnikeyEngine* unikey)
                              NULL,
                              TRUE,
                              TRUE,
-                             (unikey->ukopt.autoNonVnRestore==1)?
+                             (self->ukopt.autoNonVnRestore==1)?
                              PROP_STATE_CHECKED:PROP_STATE_UNCHECKED,
                              NULL);
-    if (ibus_prop_list_update_property(unikey->prop_list, prop) == false)
-        ibus_prop_list_append(unikey->prop_list, prop);
+    ibus_prop_list_append(self->prop_list, prop);
 
     // macroEnabled property
     label = ibus_text_new_from_static_string(_("Enable Macro"));
@@ -362,11 +487,10 @@ static void ibus_unikey_engine_create_property_list(IBusUnikeyEngine* unikey)
                              NULL,
                              TRUE,
                              TRUE,
-                             (unikey->ukopt.macroEnabled==1)?
+                             (self->ukopt.macroEnabled==1)?
                              PROP_STATE_CHECKED:PROP_STATE_UNCHECKED,
                              NULL);
-    if (ibus_prop_list_update_property(unikey->prop_list, prop) == false)
-        ibus_prop_list_append(unikey->prop_list, prop);
+    ibus_prop_list_append(self->prop_list, prop);
 
     // more setting property
     label = ibus_text_new_from_static_string(_("More settings..."));
@@ -379,38 +503,39 @@ static void ibus_unikey_engine_create_property_list(IBusUnikeyEngine* unikey)
                              TRUE,
                              PROP_STATE_UNCHECKED,
                              NULL);
-    if (ibus_prop_list_update_property(unikey->prop_list, prop) == false)
-        ibus_prop_list_append(unikey->prop_list, prop);
+    ibus_prop_list_append(self->prop_list, prop);
 }
 
 static void ibus_unikey_engine_update_preedit_string(IBusEngine *engine, const gchar *string, gboolean visible)
 {
-    IBusText *text;
+    auto* self = (IBusUnikeyEngine*)engine;
+    IBusText *text = ibus_text_new_from_string(string);
 
-    text = ibus_text_new_from_static_string(string);
+    // only underline if user opted in — default off (no gạch chân)
+    if (self->showUnderline) {
+        ibus_text_append_attribute(text, IBUS_ATTR_TYPE_UNDERLINE, IBUS_ATTR_UNDERLINE_SINGLE, 0, -1);
+    }
 
-    // underline text
-    ibus_text_append_attribute(text, IBUS_ATTR_TYPE_UNDERLINE, IBUS_ATTR_UNDERLINE_SINGLE, 0, -1);
-
-    // update and display text
-    ibus_engine_update_preedit_text_with_mode(engine, text, ibus_text_get_length(text), visible, IBUS_ENGINE_PREEDIT_COMMIT);
+    guint len = ibus_text_get_length(text);
+    // Use COMMIT mode so surrounding text handling is consistent; but if underline off,
+    // preedit still works. COMMIT is needed for Chrome/VSCode to keep composition inline.
+    ibus_engine_update_preedit_text_with_mode(engine, text, len, visible, IBUS_ENGINE_PREEDIT_COMMIT);
 }
 
 static void ibus_unikey_engine_erase_chars(IBusEngine *engine, int count)
 {
-    int i = unikey->preeditstr->length();
-
+    auto* self = (IBusUnikeyEngine*)engine;
+    if (!self->preeditstr || count <= 0) return;
+    int i = (int)self->preeditstr->length();
     while (i > 0 && count > 0) {
-        unsigned char code = unikey->preeditstr->at(i-1);
-
-        // count down if code is the first byte of utf-8 char
-        // REF: http://en.wikipedia.org/wiki/UTF-8
-        if (code >> 6 != 2) { // ignore 10xxxxxx
+        unsigned char code = (unsigned char)self->preeditstr->at(i-1);
+        if ((code >> 6) != 2) { // first byte of utf-8 char
             count--;
         }
         i--;
     }
-    unikey->preeditstr->erase(i);
+    if (i < 0) i = 0;
+    self->preeditstr->erase(i);
 }
 
 // code from x-unikey, for convert charset that not is XUtf-8
@@ -452,23 +577,16 @@ static gboolean ibus_unikey_engine_process_key_event(IBusEngine* engine,
                                                      guint keycode,
                                                      guint modifiers)
 {
-    static gboolean tmp;
+    auto* self = (IBusUnikeyEngine*)engine;
+    gboolean handled = ibus_unikey_engine_process_key_event_preedit(engine, keyval, keycode, modifiers);
 
-    unikey = (IBusUnikeyEngine*)engine;
+    // track last_key_with_shift for legacy Shift+Space restore detection
+    if (keyval >= IBUS_space && keyval <= IBUS_asciitilde)
+        self->last_key_with_shift = (modifiers & IBUS_SHIFT_MASK) ? TRUE : FALSE;
+    else if (keyval != IBUS_Shift_L && keyval != IBUS_Shift_R)
+        self->last_key_with_shift = FALSE;
 
-    tmp = ibus_unikey_engine_process_key_event_preedit(engine, keyval, keycode, modifiers);
-
-    // check last keyevent with shift
-    if (keyval >= IBUS_space && keyval <=IBUS_asciitilde)
-    {
-        unikey->last_key_with_shift = modifiers & IBUS_SHIFT_MASK;
-    }
-    else
-    {
-        unikey->last_key_with_shift = false;
-    } // end check last keyevent with shift
-
-    return tmp;
+    return handled;
 }
 
 static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
@@ -476,12 +594,66 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
                                                              guint keycode,
                                                              guint modifiers)
 {
+    auto* self = (IBusUnikeyEngine*)engine;
+    (void)keycode;
+
     if (modifiers & IBUS_RELEASE_MASK)
-    {
+        return false;
+
+    // ---- EN/VI toggle hotkeys (highest priority, before any commit/pass) ----
+    // Ctrl+Space and Shift+Space are detected as printable space with modifiers
+    // Shift+Shift (bare Shift tap twice) is detected via timing window below
+
+    // Ctrl+Space / Shift+Space
+    if (ibus_unikey_is_toggle_hotkey(self, keyval, modifiers, FALSE)) {
+        // For Shift+Space we only toggle if not at word beginning would have been Restore;
+        // now we prefer explicit toggle — consume the key so no space is inserted.
+        ibus_unikey_toggle_viet_mode(self);
+        return true;
+    }
+
+    // Bare Shift alone: Shift_L / Shift_R without other modifiers — possible Shift+Shift
+    if ((keyval == IBUS_Shift_L || keyval == IBUS_Shift_R)
+        && !(modifiers & (IBUS_CONTROL_MASK | IBUS_MOD1_MASK))) {
+
+        guint32 now = g_get_monotonic_time() / 1000; // ms
+        // If this Shift alone follows a previous Shift within window -> toggle
+        if (self->pendingShiftToggle && (now - self->lastShiftTimeMs) <= SHIFT_TOGGLE_MS) {
+            if (ibus_unikey_is_toggle_hotkey(self, keyval, modifiers, TRUE)) {
+                self->pendingShiftToggle = FALSE;
+                self->lastShiftTimeMs = 0;
+                ibus_unikey_toggle_viet_mode(self);
+                return true;
+            }
+        }
+        // otherwise arm the pending flag and wait for next Shift
+        // If user holds Shift and types, pending will be cleared by printable path
+        self->pendingShiftToggle = TRUE;
+        self->lastShiftTimeMs = now;
+        // Don't consume single Shift — let it pass for caps/shift typing
         return false;
     }
 
-    else if (modifiers & IBUS_CONTROL_MASK
+    // Any non-Shift key clears pending Shift+Shift? No — keep it for double-tap
+    // but clamp window: if too old, clear
+    if (self->pendingShiftToggle) {
+        guint32 now = g_get_monotonic_time() / 1000;
+        if ((now - self->lastShiftTimeMs) > SHIFT_TOGGLE_MS)
+            self->pendingShiftToggle = FALSE;
+    }
+
+    // ---- EN passthrough: when vietMode==OFF, don't filter Vietnamese ----
+    // Still allow BackSpace/restore in EN? No — pure passthrough for English.
+    // Only toggle hotkey above is handled. Everything else is forwarded.
+    if (!self->vietMode) {
+        // Need to ensure we have no stale preedit; if switching left some, commit
+        if (self->preeditstr && !self->preeditstr->empty()) {
+            ibus_unikey_buffer_commit(engine);
+        }
+        return false;
+    }
+
+    if (modifiers & IBUS_CONTROL_MASK
              || modifiers & IBUS_MOD1_MASK // alternate mask
              || keyval == IBUS_Control_L
              || keyval == IBUS_Control_R
@@ -497,9 +669,7 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
         return false;
     }
 
-    else if ((keyval >= IBUS_Caps_Lock && keyval <= IBUS_Hyper_R)
-            || (!(modifiers & IBUS_SHIFT_MASK) && (keyval == IBUS_Shift_L || keyval == IBUS_Shift_R))  // when press one shift key
-        )
+    else if ((keyval >= IBUS_Caps_Lock && keyval <= IBUS_Hyper_R))
     {
         return false;
     }
@@ -509,39 +679,37 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
     {
         UnikeyBackspacePress();
 
-        if (UnikeyBackspaces == 0 || unikey->preeditstr->empty())
+        if (UnikeyBackspaces == 0 || self->preeditstr->empty())
         {
             return false;
         }
         else
         {
-            if (unikey->preeditstr->length() <= (guint)UnikeyBackspaces)
+            if ((int)self->preeditstr->length() <= UnikeyBackspaces)
             {
                 ibus_unikey_buffer_reset(engine);
             }
             else
             {
                 ibus_unikey_engine_erase_chars(engine, UnikeyBackspaces);
-                ibus_unikey_engine_update_preedit_string(engine, unikey->preeditstr->c_str(), true);
+                ibus_unikey_engine_update_preedit_string(engine, self->preeditstr->c_str(), true);
             }
 
             // change tone position after press backspace
             if (UnikeyBufChars > 0)
             {
-                if (unikey->oc == CONV_CHARSET_XUTF8)
+                if (self->oc == CONV_CHARSET_XUTF8)
                 {
-                    unikey->preeditstr->append((const gchar*)UnikeyBuf, UnikeyBufChars);
+                    self->preeditstr->append((const gchar*)UnikeyBuf, UnikeyBufChars);
                 }
                 else
                 {
-                    static unsigned char buf[CONVERT_BUF_SIZE];
+                    unsigned char buf[CONVERT_BUF_SIZE];
                     int bufSize = CONVERT_BUF_SIZE;
-
                     latinToUtf(buf, UnikeyBuf, UnikeyBufChars, &bufSize);
-                    unikey->preeditstr->append((const gchar*)buf, CONVERT_BUF_SIZE - bufSize);
+                    self->preeditstr->append((const gchar*)buf, CONVERT_BUF_SIZE - bufSize);
                 }
-
-                ibus_unikey_engine_update_preedit_string(engine, unikey->preeditstr->c_str(), true);
+                ibus_unikey_engine_update_preedit_string(engine, self->preeditstr->c_str(), true);
             }
         }
         return true;
@@ -557,30 +725,38 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
     else if ((keyval >= IBUS_space && keyval <=IBUS_asciitilde)
             || keyval == IBUS_Shift_L || keyval == IBUS_Shift_R) // sure this have IBUS_SHIFT_MASK
     {
+        // printable char clears pending shift-toggle after use
+        if (keyval >= IBUS_space && keyval <= IBUS_asciitilde)
+            self->pendingShiftToggle = FALSE;
+
         UnikeySetCapsState(modifiers & IBUS_SHIFT_MASK, modifiers & IBUS_LOCK_MASK);
 
         // process keyval
 
-        if ((unikey->im == UkTelex || unikey->im == UkSimpleTelex2)
-            && unikey->process_w_at_begin == false
+        if ((self->im == UkTelex || self->im == UkSimpleTelex2)
+            && self->process_w_at_begin == false
             && UnikeyAtWordBeginning()
             && (keyval == IBUS_w || keyval == IBUS_W))
         {
             UnikeyPutChar(keyval);
-            unikey->preeditstr->append(keyval==IBUS_w?"w":"W");
-            ibus_unikey_engine_update_preedit_string(engine, unikey->preeditstr->c_str(), true);
+            self->preeditstr->append(keyval==IBUS_w?"w":"W");
+            ibus_unikey_engine_update_preedit_string(engine, self->preeditstr->c_str(), true);
             return true;
         }
 
-        // shift + space, shift + shift event
-        if ((unikey->last_key_with_shift == false && modifiers & IBUS_SHIFT_MASK
-                    && keyval == IBUS_space && !UnikeyAtWordBeginning())
-            || (keyval == IBUS_Shift_L || keyval == IBUS_Shift_R) // (&& modifiers & IBUS_SHIFT_MASK), sure this have IBUS_SHIFT_MASK
-           )
+        // Legacy Shift+Space restore: only if this Space was NOT a viet toggle.
+        // Toggle for Shift+Space / Ctrl+Space already returned at top, so any Space
+        // reaching here is intentionally NOT a toggle (hotkey filter excluded it).
+        // Keep old restore behaviour for users who disabled toggle for shift-space.
+        if (keyval == IBUS_space && (modifiers & IBUS_SHIFT_MASK)
+            && self->last_key_with_shift == FALSE && !UnikeyAtWordBeginning())
         {
             UnikeyRestoreKeyStrokes();
-        } // end shift + space, shift + shift event
-
+        }
+        else if (keyval == IBUS_Shift_L || keyval == IBUS_Shift_R)
+        {
+            UnikeyRestoreKeyStrokes();
+        }
         else
         {
             UnikeyFilter(keyval);
@@ -590,9 +766,9 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
         // process result of ukengine
         if (UnikeyBackspaces > 0)
         {
-            if (unikey->preeditstr->length() <= (guint)UnikeyBackspaces)
+            if ((int)self->preeditstr->length() <= UnikeyBackspaces)
             {
-                unikey->preeditstr->clear();
+                self->preeditstr->clear();
             }
             else
             {
@@ -602,37 +778,36 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
 
         if (UnikeyBufChars > 0)
         {
-            if (unikey->oc == CONV_CHARSET_XUTF8)
+            if (self->oc == CONV_CHARSET_XUTF8)
             {
-                unikey->preeditstr->append((const gchar*)UnikeyBuf, UnikeyBufChars);
+                self->preeditstr->append((const gchar*)UnikeyBuf, UnikeyBufChars);
             }
             else
             {
-                static unsigned char buf[CONVERT_BUF_SIZE];
+                unsigned char buf[CONVERT_BUF_SIZE];
                 int bufSize = CONVERT_BUF_SIZE;
-
                 latinToUtf(buf, UnikeyBuf, UnikeyBufChars, &bufSize);
-                unikey->preeditstr->append((const gchar*)buf, CONVERT_BUF_SIZE - bufSize);
+                self->preeditstr->append((const gchar*)buf, CONVERT_BUF_SIZE - bufSize);
             }
         }
         else if (keyval != IBUS_Shift_L && keyval != IBUS_Shift_R) // if ukengine not process
         {
-            static int n;
-            static char s[6];
-
+            int n;
+            char s[6];
             n = g_unichar_to_utf8(keyval, s); // convert ucs4 to utf8 char
-            unikey->preeditstr->append(s, n);
+            self->preeditstr->append(s, n);
         }
         // end process result of ukengine
 
-        // commit string: if need
-        if (unikey->preeditstr->length() > 0)
+        // commit string: if need — WordBreakSyms trigger commit, but stay as preedit commit
+        // to avoid extra surrounding-text race. Commit via preedit commit is more reliable
+        // than delete_surrounding on Wayland. Keep simple.
+        if (self->preeditstr->length() > 0)
         {
-            static guint i;
-            for (i = 0; i < sizeof(WordBreakSyms); i++)
+            for (guint i = 0; i < sizeof(WordBreakSyms); i++)
             {
-                if (WordBreakSyms[i] == unikey->preeditstr->at(unikey->preeditstr->length()-1)
-                    && WordBreakSyms[i] == keyval)
+                if (WordBreakSyms[i] == self->preeditstr->at(self->preeditstr->length()-1)
+                    && WordBreakSyms[i] == (unsigned char)keyval)
                 {
                     ibus_unikey_buffer_commit(engine);
                     return true;
@@ -641,7 +816,7 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
         }
         // end commit string
 
-        ibus_unikey_engine_update_preedit_string(engine, unikey->preeditstr->c_str(), true);
+        ibus_unikey_engine_update_preedit_string(engine, self->preeditstr->c_str(), true);
         return true;
     } //end capture printable char
 
@@ -649,4 +824,3 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
     ibus_unikey_buffer_commit(engine);
     return false;
 }
-

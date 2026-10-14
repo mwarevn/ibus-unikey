@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+if command -v glib-compile-schemas >/dev/null 2>&1; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas || true
+fi
+# Refresh IBus component cache if daemon is running
+if [ -x /usr/bin/ibus ] && pgrep -x ibus-daemon >/dev/null 2>&1; then
+    echo "ibus-unikey installed. Run 'ibus restart' or logout/login to activate." >&2
+fi
+exit 0

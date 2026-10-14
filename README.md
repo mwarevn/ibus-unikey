@@ -1,98 +1,84 @@
-### ibus-unikey không còn được hỗ trợ chính thức và repo này chỉ là bản fork của [ibus-unikey](https://github.com/vn-input/ibus-unikey)
+# ibus-unikey
 
-# Install From SourceIn (Guide)
+Fork của [ibus-unikey](https://github.com/vn-input/ibus-unikey) — bộ gõ tiếng Việt cho IBus (Telex, VNI, STelex). Đã fix lỗi `Win+Space` bị chặn khi đang gõ dở và tắt gạch chân preedit.
 
-## Common
+> Upstream không còn phát triển. Repo này chỉ duy trì bản build cho Ubuntu/Debian hiện đại.
+
+## Cài đặt
+
+### Cách nhanh (khuyên dùng)
+
+```bash
+git clone https://github.com/mwarevn/ibus-unikey.git && cd ibus-unikey
+./scripts/setup.sh -y
 ```
-git clone https://github.com/mwarevn/ibus-unikey.git
+
+Script tự: cài deps, build, `cmake --install`, `glib-compile-schemas`, thêm `Unikey` vào `preload-engines`, cấu hình env (`~/.xinputrc`, `~/.profile`), `ibus restart`. Sau đó **logout/login** một lần.
+
+Tùy chọn:
+
+```bash
+./scripts/setup.sh --build-only -y   # chỉ build + install, không đụng config
+./scripts/setup.sh --setup-only -y   # chỉ setup ibus/gsettings/env
+./scripts/setup.sh --uninstall       # gỡ (giữ deps)
 ```
+
+### Cài thủ công
+
+```bash
+sudo apt-get install -y cmake g++ make pkg-config libibus-1.0-dev libgtk-3-dev gettext
+
+cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -B build
+cmake --build build -j$(nproc)
+sudo cmake --install build
+sudo glib-compile-schemas /usr/share/glib-2.0/schemas
+
+ibus restart
+ibus-setup   # tab Input Method -> Add -> Vietnamese - Unikey
+im-config -n ibus   # khi hỏi user configuration, chọn ibus (ghi ~/.xinputrc)
 ```
-cd ibus-unikey
+
+Sau đó logout/login, chọn **Unikey** trong tray/input source.
+
+### Cài từ file .deb (build sẵn)
+
+Build trên máy (tạo `build/ibus-unikey_0.7.0_amd64.deb`):
+
+```bash
+cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -B build
+cmake --build build -j$(nproc)
+cpack --config build/CPackConfig.cmake -G DEB -B build
+# hoặc: cmake --build build --target package  (alias của cpack)
 ```
 
+Cài / gỡ:
 
-### Ubuntu, Debian
+```bash
+sudo apt install ./build/ibus-unikey_0.7.0_amd64.deb
+# postinst tự chạy glib-compile-schemas; sau đó:
+ibus restart   # rồi logout/login 1 lần
 
-1. Install required packages:
+sudo apt remove ibus-unikey
+```
 
-    ```
-    sudo apt-get install -y cmake g++ make pkg-config libibus-1.0-dev libgtk-3-dev gettext
-    ```
-2. Build & install
+## Sử dụng
 
-    ```
-    mkdir build
-    cd build
-    cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=release -DLIBEXECDIR=/usr/lib/ibus ..
-    sudo make
-    sudo make install
-    ```
+- **Chọn bộ gõ:** `ibus-setup-unikey` hoặc icon Unikey trên panel → `More settings...`
+  - Input method: `Telex` (mặc định) / `VNI` / `STelex` / `STelex2`
+  - Charset: `Unicode` (mặc định)
+- **Gõ tiếng Việt:** gõ như bình thường, từ được commit khi gặp dấu `space` / dấu câu (`, . ; :`...). `Backspace` sửa dấu.
+- **Đổi EN <-> VI:**
+  - Bấm `Shift+Shift` (double tap), hoặc `Shift+Space`, hoặc `Ctrl+Space`
+  - Hoặc bấm toggle `EN/VI` trên panel IBus
+- **Win+Space** (đổi layout hệ thống) không bị nuốt khi đang gõ dở — preedit sẽ được commit trước khi chuyển.
 
-3. Apply the keyboard input method
+## Gỡ cài đặt
 
-
-    #### Step 1: Install Vietnamese Language Support
-
-    > You must have the "Language Support" application installed.
-    
-    - Open the Language Support application.
-    - In the list of available languages, locate `Vietnamese`.
-    - If Vietnamese is not installed, select it and click Install.
-    - Change your keyboard input method system to IBus. (The exact steps for this may vary depending on your operating system)
-   
-    #### Step 2: Configure IBus for Vietnamese
-    
-    - Open a terminal window.
-    - Run the command `ibus-setup`.
-    - Navigate to the Input Method tab.
-    - If `Vietnamese - Unikey` is not listed, click Add and select it.
-    - Close the ibus-setup window.
-    - In the same terminal window, run the command `ibus restart`.
-   
-    #### Step 3: Select IBus in System Settings
-    
-    - Run `im-config` in the terminal.
-    - When prompted for `user configuration`, select `ibus`.
-
-   #### Step 4: Finalize Setup
-    
-    - Restart your computer.
-    - Open your system Settings.
-    - Navigate to the input method settings. (This location may vary depending on your operating system)
-    - Change the input method to `Vietnamese`.
-
-    > You should now be able to type in Vietnamese!
-    
-
-
-### FreeBSD
-
-This instruction is for FreeBSD 12-RELEASE.
-
-Build and install:
-
-    mkdir build
-    cd build
-    cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=release -DLIBEXECDIR=/usr/local/lib ..
-    make
-    sudo make install
-
-If you use GNOME, `ibus-unikey` should work once IBus is configured correctly.
-
-If you use KDE, some additional configuration is needed:
-
-1. Add
-
-    ```
-    export GTK_IM_MODULE=ibus
-    export XMODIFIERS=@im=ibus
-    export QT_IM_MODULE=ibus
-    ```
- into `$HOME/.profile`.
-
-2. Make `ibus-daemon` start automatically with the right configuration:
-
-    ```
-    $ echo "ibus-daemon -d -x -r -n kde" > $HOME/.kde/Autostart/ibus-daemon-autostart.sh && chmod +x $HOME/.kde/Autostart/ibus-daemon-autostart.sh
-    ```
-
+```bash
+./scripts/setup.sh --uninstall
+# hoặc thủ công: sudo cmake --install build --prefix /usr (không có uninstall target,
+# xóa tay: /usr/lib/ibus/ibus-engine-unikey, /usr/lib/ibus/ibus-setup-unikey,
+#          /usr/share/ibus/component/unikey.xml, /usr/share/glib-2.0/schemas/org.freedesktop.ibus.engine.unikey.gschema.xml)
+sudo glib-compile-schemas /usr/share/glib-2.0/schemas
+ibus restart
+```

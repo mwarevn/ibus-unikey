@@ -600,6 +600,26 @@ static gboolean ibus_unikey_engine_process_key_event_preedit(IBusEngine* engine,
     if (modifiers & IBUS_RELEASE_MASK)
         return false;
 
+    // System hotkeys (Win/Super/Meta/Hyper + anything, e.g. Win+Space to
+    // switch input source): commit current preedit and DON'T consume the
+    // event, otherwise the desktop never sees Space.
+    if (modifiers & (IBUS_SUPER_MASK | IBUS_HYPER_MASK | IBUS_META_MASK | IBUS_MOD4_MASK))
+    {
+        if (self->preeditstr && !self->preeditstr->empty())
+            ibus_unikey_buffer_commit(engine);
+        return false;
+    }
+    // Bare Super/Hyper/Meta press alone (no modifier bit yet) — also commit
+    // so the subsequent Super+Space isn't swallowed. Covers Win key down.
+    if (keyval == IBUS_Super_L || keyval == IBUS_Super_R
+        || keyval == IBUS_Hyper_L || keyval == IBUS_Hyper_R
+        || keyval == IBUS_Meta_L  || keyval == IBUS_Meta_R)
+    {
+        if (self->preeditstr && !self->preeditstr->empty())
+            ibus_unikey_buffer_commit(engine);
+        return false;
+    }
+
     // ---- EN/VI toggle hotkeys (highest priority, before any commit/pass) ----
     // Ctrl+Space and Shift+Space are detected as printable space with modifiers
     // Shift+Shift (bare Shift tap twice) is detected via timing window below
